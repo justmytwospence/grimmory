@@ -804,6 +804,75 @@ class KoboEntitlementServiceTest {
         }
 
         @Test
+        @DisplayName("Should echo the device's stored reading statistics instead of blanking them")
+        void generateChangedReadingStates_preservesStoredStatistics() {
+            UserBookProgressEntity progress = createKoboProgressForStatistics();
+
+            KoboReadingState.Statistics storedStatistics = KoboReadingState.Statistics.builder()
+                    .lastModified("2025-06-15T12:00:00Z")
+                    .spentReadingMinutes(42)
+                    .remainingTimeMinutes(260)
+                    .build();
+            KoboReadingStateEntity storedEntity = new KoboReadingStateEntity();
+            when(readingStateRepository.findByEntitlementIdAndUserId("1", user.getId()))
+                    .thenReturn(Optional.of(storedEntity));
+            when(readingStateMapper.toDto(storedEntity)).thenReturn(KoboReadingState.builder()
+                    .entitlementId("1")
+                    .statistics(storedStatistics)
+                    .build());
+
+            List<ChangedReadingState> result = koboEntitlementService.generateChangedReadingStates(List.of(progress));
+
+            KoboReadingState.Statistics statistics = result.getFirst().getChangedReadingState().getReadingState().getStatistics();
+            assertEquals("2025-06-15T12:00:00Z", statistics.getLastModified());
+            assertEquals(42, statistics.getSpentReadingMinutes());
+            assertEquals(260, statistics.getRemainingTimeMinutes());
+        }
+
+        @Test
+        @DisplayName("Should fall back to a timestamp-only statistics block when nothing is stored")
+        void generateChangedReadingStates_statisticsFallbackWhenNoneStored() {
+            UserBookProgressEntity progress = createKoboProgressForStatistics();
+
+            when(readingStateRepository.findByEntitlementIdAndUserId("1", user.getId())).thenReturn(Optional.empty());
+            when(readingStateRepository.findFirstByEntitlementIdAndUserIdIsNullOrderByPriorityTimestampDescLastModifiedStringDescIdDesc("1"))
+                    .thenReturn(Optional.empty());
+
+            List<ChangedReadingState> result = koboEntitlementService.generateChangedReadingStates(List.of(progress));
+
+            KoboReadingState.Statistics statistics = result.getFirst().getChangedReadingState().getReadingState().getStatistics();
+            assertNotNull(statistics.getLastModified());
+            assertNull(statistics.getSpentReadingMinutes());
+            assertNull(statistics.getRemainingTimeMinutes());
+        }
+
+        private UserBookProgressEntity createKoboProgressForStatistics() {
+            BookEntity book = new BookEntity();
+            book.setId(1L);
+            BookFileEntity primaryFile = new BookFileEntity();
+            primaryFile.setId(10L);
+            primaryFile.setBook(book);
+            primaryFile.setBookType(BookFileType.EPUB);
+            book.setBookFiles(Set.of(primaryFile));
+
+            UserBookProgressEntity progress = new UserBookProgressEntity();
+            progress.setBook(book);
+            progress.setKoboProgressPercent(50f);
+            progress.setReadStatus(ReadStatus.READING);
+
+            when(koboSettingsService.getCurrentUserSettings()).thenReturn(new KoboSyncSettings());
+            when(fileProgressRepository.findByUserIdAndBookFileIdIn(eq(user.getId()), any())).thenReturn(List.of());
+            when(readingStateBuilder.buildBookmarkFromProgress(eq(progress), isNull(), any(OffsetDateTime.class), anyMap()))
+                    .thenReturn(KoboReadingState.CurrentBookmark.builder().progressPercent(50).build());
+            when(readingStateBuilder.buildStatusInfoFromProgress(eq(progress), anyString()))
+                    .thenReturn(KoboReadingState.StatusInfo.builder()
+                            .status(KoboReadStatus.READING)
+                            .timesStartedReading(1)
+                            .build());
+            return progress;
+        }
+
+        @Test
         @DisplayName("Should use synced EPUB file progress when book has multiple files")
         void generateChangedReadingStates_usesSyncedEpubFileProgress() {
             BookEntity book = new BookEntity();

@@ -140,6 +140,7 @@ public class KoboEntitlementService {
 
         return progressEntries.stream()
                 .map(progress -> buildChangedReadingState(
+                        userId,
                         progress,
                         fileProgressByFileId.get(syncedEpubFileIdsByBookId.get(progress.getBook().getId())),
                         timestamp,
@@ -214,7 +215,8 @@ public class KoboEntitlementService {
                 .build();
     }
 
-    private ChangedReadingState buildChangedReadingState(UserBookProgressEntity progress,
+    private ChangedReadingState buildChangedReadingState(Long userId,
+                                                         UserBookProgressEntity progress,
                                                          UserBookFileProgressEntity fileProgress,
                                                          String timestamp,
                                                          OffsetDateTime now,
@@ -232,7 +234,7 @@ public class KoboEntitlementService {
                 .priorityTimestamp(timestamp)
                 .statusInfo(readingStateBuilder.buildStatusInfoFromProgress(progress, timestamp))
                 .currentBookmark(bookmark)
-                .statistics(KoboReadingState.Statistics.builder().lastModified(timestamp).build())
+                .statistics(resolveStatistics(findStoredReadingState(entitlementId, userId), timestamp))
                 .build();
 
         return ChangedReadingState.builder()
@@ -247,12 +249,7 @@ public class KoboEntitlementService {
         String entitlementId = String.valueOf(book.getId());
         Long userId = authenticationService.getAuthenticatedUser().getId();
 
-        KoboReadingState existingState = readingStateRepository.findByEntitlementIdAndUserId(entitlementId, userId)
-                .or(() -> readingStateRepository
-                        .findFirstByEntitlementIdAndUserIdIsNullOrderByPriorityTimestampDescLastModifiedStringDescIdDesc(
-                                entitlementId))
-                .map(readingStateMapper::toDto)
-                .orElse(null);
+        KoboReadingState existingState = findStoredReadingState(entitlementId, userId);
 
         Optional<UserBookProgressEntity> userProgress = progressRepository
                 .findByUserIdAndBookIdForKoboSync(userId, book.getId());
@@ -286,9 +283,30 @@ public class KoboEntitlementService {
                 .lastModified(now.toString())
                 .statusInfo(statusInfo)
                 .currentBookmark(bookmark)
-                .statistics(KoboReadingState.Statistics.builder().lastModified(now.toString()).build())
+                .statistics(resolveStatistics(existingState, now.toString()))
                 .priorityTimestamp(now.toString())
                 .build();
+    }
+
+    private KoboReadingState findStoredReadingState(String entitlementId, Long userId) {
+        return readingStateRepository.findByEntitlementIdAndUserId(entitlementId, userId)
+                .or(() -> readingStateRepository
+                        .findFirstByEntitlementIdAndUserIdIsNullOrderByPriorityTimestampDescLastModifiedStringDescIdDesc(
+                                entitlementId))
+                .map(readingStateMapper::toDto)
+                .orElse(null);
+    }
+
+    /**
+     * Echo back the reading statistics the device last reported (SpentReadingMinutes,
+     * RemainingTimeMinutes). Sending a Statistics block that carries only a fresh LastModified
+     * makes the device treat it as newer than its own copy and clear its "time left" estimate.
+     */
+    private KoboReadingState.Statistics resolveStatistics(KoboReadingState storedState, String fallbackTimestamp) {
+        if (storedState != null && storedState.getStatistics() != null) {
+            return storedState.getStatistics();
+        }
+        return KoboReadingState.Statistics.builder().lastModified(fallbackTimestamp).build();
     }
 
     private Optional<UserBookFileProgressEntity> findSyncedEpubFileProgress(Long userId, BookEntity book) {
